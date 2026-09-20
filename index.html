@@ -177,6 +177,10 @@
       <p class="hint">Let the class talk normally and watch the bar. Put the amber
          line a little above where ordinary work sits, then leave it a week before
          changing it again.</p>
+      <p class="hint">Listening only happens while this page is the one on screen.
+         Switch to another tab and it stops until you come back — nothing could be
+         drawn over that other tab anyway. It starts counting afresh on your return
+         rather than acting on what it heard before you left.</p>
     </div>
 
     <div class="f">
@@ -253,8 +257,13 @@
 quiet2.jpg
 quiet3.jpg"></textarea>
       <p class="hint">One per line, in the order you want them. Same rule — a
-         filename next to this page, or a full https address. They cross-fade for
-         the length of the alert.</p>
+         filename next to this page, or a full https address.</p>
+      <p class="hint">Put a number after a filename to say how many seconds it
+         holds, and the run repeats until the alert ends:</p>
+      <p class="hint" style="font-family:var(--mono)">quiet1.png 5<br>quiet2.png 4<br>quiet3.png 3</p>
+      <p class="hint">Leave the numbers off and they share the time evenly, as
+         before. Mix the two and the ones without a number divide up whatever is
+         left over.</p>
       <div class="thumbs" id="thumbs"></div>
     </div>
 
@@ -410,16 +419,39 @@ quiet3.jpg"></textarea>
   /* ---------- the alert ---------- */
   var shotTimer = null, endTimer = null, shotList = [], shotAt = 0;
 
-  function imgUrls(){
-    return String(cfg.imgs || "").split(/\r?\n/)
-      .map(function(s){ return s.trim(); })
-      .filter(Boolean);
+  /* Each line is a picture, optionally followed by how many seconds it should
+     hold. "quiet1.png 5" means five seconds. A line with no number shares out
+     whatever time is left over, so a plain list still behaves as it always did.
+     The filename is everything up to that trailing number, which keeps names
+     with spaces in them working. */
+  function imgSpecs(){
+    return String(cfg.imgs || "").split(/\r?\n/).map(function(line){
+      var t = line.trim();
+      if(!t) return null;
+      var m = t.match(/^(.*\S)\s+(\d+(?:\.\d+)?)$/);
+      if(m) return { url: m[1], secs: Math.max(0.5, Math.min(120, parseFloat(m[2]))) };
+      return { url: t, secs: 0 };
+    }).filter(Boolean);
   }
-  function buildShots(){
+  function imgUrls(){
+    return imgSpecs().map(function(sp){ return sp.url; });
+  }
+  var shotHold = [];        // seconds each picture stays up, in order
+
+  function buildShots(secs){
     shots.innerHTML = "";
-    shotList = imgUrls().map(function(u){
+    var specs = imgSpecs();
+    /* whatever is not spoken for gets split between the lines that gave no
+       number of their own */
+    var named = specs.filter(function(sp){ return sp.secs > 0; });
+    var spoken = named.reduce(function(a, sp){ return a + sp.secs; }, 0);
+    var blanks = specs.length - named.length;
+    var share = blanks ? Math.max(1, (secs - spoken) / blanks) : 0;
+
+    shotHold = specs.map(function(sp){ return sp.secs > 0 ? sp.secs : share; });
+    shotList = specs.map(function(sp){
       var im = document.createElement("img");
-      im.src = u;
+      im.src = sp.url;
       im.alt = "";
       im.addEventListener("error", function(){ im.dataset.bad = "1"; });
       shots.appendChild(im);
@@ -476,17 +508,20 @@ quiet3.jpg"></textarea>
 
     buildTicker();
 
-    buildShots();
+    var secs = Math.max(3, Math.min(120, parseInt(cfg.dur, 10) || 12));
+    buildShots(secs);
     shotAt = 0;
     showShot(0);
-    var secs = Math.max(3, Math.min(120, parseInt(cfg.dur, 10) || 12));
     if(shotList.length > 1){
-      /* spread the pictures evenly across however long the alert runs */
-      var every = Math.max(1200, Math.round((secs * 1000) / shotList.length));
-      shotTimer = setInterval(function(){
+      /* Each picture waits its own length, then hands over — so the run can be
+         5, 4, 3 and come round again, rather than everything getting an equal
+         and identical slice. */
+      var step = function(){
         shotAt = (shotAt + 1) % shotList.length;
         showShot(shotAt);
-      }, every);
+        shotTimer = setTimeout(step, Math.round(shotHold[shotAt] * 1000));
+      };
+      shotTimer = setTimeout(step, Math.round(shotHold[0] * 1000));
     }
 
     alertEl.classList.add("up");
@@ -508,7 +543,7 @@ quiet3.jpg"></textarea>
   function clear(manual){
     if(!firing) return;
     firing = false;
-    clearTimeout(endTimer); clearInterval(shotTimer);
+    clearTimeout(endTimer); clearTimeout(shotTimer);
     endTimer = shotTimer = null;
     alertEl.classList.remove("up");
     alertEl.setAttribute("aria-hidden", "true");
@@ -552,7 +587,15 @@ quiet3.jpg"></textarea>
     }, function(){});
   }
   document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState === "visible") keepAwake();
+    if(document.visibilityState !== "visible") return;
+    keepAwake();
+    /* The loop runs on animation frames, which a browser stops delivering to a
+       tab nobody is looking at — so while you are on another page, nothing is
+       measured. Coming back, the half-finished count from before is stale: a
+       room that was loud when you left would trip the alert the instant you
+       returned, on evidence minutes old. Start counting again from here. */
+    aboveSince = 0;
+    level = 0;
   });
 
   /* ---------- settings panel ---------- */
