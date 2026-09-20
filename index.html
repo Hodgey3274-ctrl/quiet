@@ -138,7 +138,12 @@
 </head>
 <body>
 
-<iframe id="board" title="Bell Board" allow="autoplay; fullscreen"></iframe>
+<!-- Deliberately not allowed fullscreen. Bell Board's present mode asks for it,
+     and a fullscreen element is promoted to the browser's top layer, above
+     everything else on the page — which put the board over the top of the
+     alert and hid it completely. Refused here, Bell Board still applies its
+     clean presenting layout; this page keeps ownership of the screen. -->
+<iframe id="board" title="Bell Board" allow="autoplay"></iframe>
 <button id="corner" type="button" title="Settings" aria-label="Settings"></button>
 
 <div id="alert" aria-hidden="true">
@@ -258,6 +263,9 @@ quiet3.jpg"></textarea>
       <input type="text" id="boardUrl" placeholder="https://script.google.com/macros/s/…/exec?display=1">
       <p class="hint">Your display link. Use the one ending <code>?display=1</code> so
          it follows the bells and shows nothing you can edit by accident.</p>
+      <p class="hint">Press <b>F</b> here to go full screen, then <b>P</b> inside Bell
+         Board for its clean layout. That order matters: this page has to be the one
+         holding the screen, or the board covers the alert instead of sitting under it.</p>
     </div>
 
     <div class="acts">
