@@ -9,6 +9,8 @@
     --ink:#edeff2; --dim:#8592a3; --faint:#566171;
     --panel:#141b23; --raised:#1b242e; --line:#26313d;
     --amber:#f0a93b; --amber-ink:#1c1305; --green:#3ecf8e; --red:#ef5b5b;
+    --band:clamp(64px,11vh,116px);
+    --tgap:clamp(28px,4vw,64px);
     --mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;
     --body:system-ui,-apple-system,"Segoe UI",sans-serif;
   }
@@ -35,19 +37,37 @@
   }
   #alert.up{ opacity:1; pointer-events:auto; }
   @media (prefers-reduced-motion: reduce){ #alert{ transition:none; } }
-  #shots{ position:absolute; inset:0; }
+  /* the pictures stop where the banner starts, so neither covers the other */
+  #shots{ position:absolute; left:0; right:0; top:0; bottom:var(--band); }
+  #alert.no-ticker #shots{ bottom:0; }
   #shots img{
     position:absolute; inset:0; width:100%; height:100%;
     object-fit:contain; opacity:0; transition:opacity .7s ease;
   }
   #shots img.on{ opacity:1; }
-  #word{
-    position:relative; z-index:2; text-align:center; padding:24px;
-    font-weight:800; letter-spacing:.01em; line-height:1;
-    font-size:clamp(48px,11vw,180px);
-    text-shadow:0 6px 40px rgba(0,0,0,.85), 0 2px 8px rgba(0,0,0,.9);
+  /* A solid band, not a tint — it has to be read from the back row without
+     competing with the picture above it. */
+  #ticker{
+    position:absolute; left:0; right:0; bottom:0; height:var(--band); z-index:2;
+    background:var(--amber); color:var(--amber-ink);
+    display:flex; align-items:center; overflow:hidden; white-space:nowrap;
+    box-shadow:0 -10px 30px -10px rgba(0,0,0,.7);
   }
-  #word.quiet{ font-size:clamp(28px,5vw,74px); opacity:.85; }
+  #tickTrack{
+    display:inline-flex; align-items:center; gap:var(--tgap);
+    will-change:transform; animation:tick linear infinite;
+  }
+  .tick-seg{
+    display:inline-flex; align-items:center; gap:var(--tgap); flex:none;
+    font-weight:800; letter-spacing:.01em; line-height:1;
+    font-size:clamp(26px,5.6vh,62px);
+  }
+  .tick-seg .dot{ opacity:.5; }
+  @keyframes tick{ from{ transform:translateX(0); } to{ transform:translateX(-50%); } }
+  @media (prefers-reduced-motion: reduce){
+    #tickTrack{ animation:none; justify-content:center; width:100%; }
+    #tickTrack .tick-seg:nth-child(2){ display:none; }
+  }
 
   /* ---------- settings ---------- */
   #panel{
@@ -123,7 +143,7 @@
 
 <div id="alert" aria-hidden="true">
   <div id="shots"></div>
-  <div id="word"></div>
+  <div id="ticker" hidden><div id="tickTrack"></div></div>
 </div>
 
 <audio id="snd" preload="auto"></audio>
@@ -158,8 +178,10 @@
       <label>Too loud above</label>
       <div class="row">
         <input type="range" id="thr" min="1" max="100" class="grow">
-        <span id="thrNum" class="pill"></span>
+        <input type="number" id="thrNum" min="1" max="100" style="max-width:82px">
       </div>
+      <p class="hint">Drag it, or type the number if you want the same setting on
+         another machine. The amber line on the bar above moves with it.</p>
     </div>
 
     <div class="f">
@@ -194,7 +216,18 @@
       <label>Words on the alert</label>
       <input type="text" id="word1" placeholder="Too loud">
       <input type="text" id="word2" placeholder="Back to work, please" style="margin-top:8px">
-      <p class="hint">The big line, then the smaller one underneath. Leave either empty to drop it.</p>
+      <p class="hint">Both scroll along a band at the bottom of the screen, one after
+         the other, so they never sit on top of the pictures. Leave either empty to drop it.</p>
+    </div>
+
+    <div class="f">
+      <label>Alert volume</label>
+      <div class="row">
+        <input type="range" id="vol" min="0" max="100" class="grow">
+        <input type="number" id="volNum" min="0" max="100" style="max-width:82px">
+      </div>
+      <p class="hint">How loud the song plays, as a percentage. Classroom speakers
+         are usually turned up for video already, so this rarely wants to be 100.</p>
     </div>
 
     <div class="f">
@@ -253,6 +286,7 @@ quiet3.jpg"></textarea>
   var DEF = {
     boardUrl: "",
     thr: 55,          // where "too loud" starts, on the 0-100 meter
+    vol: 80,          // how loud the alert's own song plays, 0-100
     hold: 4,          // seconds above the line before it fires
     dur: 12,          // seconds the alert stays up
     cool: 120,        // seconds before it may fire again
@@ -279,7 +313,8 @@ quiet3.jpg"></textarea>
 
   var $ = function(id){ return document.getElementById(id); };
   var board = $("board"), alertEl = $("alert"), shots = $("shots"),
-      word = $("word"), snd = $("snd"), panel = $("panel"), gate = $("gate");
+      ticker = $("ticker"), tickTrack = $("tickTrack"),
+      snd = $("snd"), panel = $("panel"), gate = $("gate");
 
   /* ---------- the board underneath ---------- */
   function paintBoard(){
@@ -390,24 +425,48 @@ quiet3.jpg"></textarea>
     });
   }
 
+  /* Two copies of the message, sliding exactly half their own width: the seam
+     lands where the second copy starts, so it reads as one endless line. The
+     duration comes from the measured width, which keeps the speed the same
+     whether the message is three words or twenty. */
+  function buildTicker(){
+    var msgs = [];
+    if(cfg.word1) msgs.push(cfg.word1);
+    if(cfg.word2) msgs.push(cfg.word2);
+    tickTrack.innerHTML = "";
+    if(!msgs.length){
+      ticker.hidden = true;
+      alertEl.classList.add("no-ticker");
+      return;
+    }
+    ticker.hidden = false;
+    alertEl.classList.remove("no-ticker");
+    for(var c = 0; c < 2; c++){
+      var seg = document.createElement("div");
+      seg.className = "tick-seg";
+      msgs.forEach(function(m){
+        var t = document.createElement("span");
+        t.textContent = m;
+        seg.appendChild(t);
+        var d = document.createElement("span");
+        d.className = "dot";
+        d.textContent = "•";
+        seg.appendChild(d);
+      });
+      tickTrack.appendChild(seg);
+    }
+    requestAnimationFrame(function(){
+      var w = tickTrack.scrollWidth / 2 || 800;
+      tickTrack.style.animationDuration = Math.max(6, Math.round(w / 130)) + "s";
+    });
+  }
+
   function fire(manual){
     if(firing) return;
     firing = true;
     aboveSince = 0;
 
-    word.innerHTML = "";
-    if(cfg.word1){
-      var a = document.createElement("div");
-      a.textContent = cfg.word1;
-      word.appendChild(a);
-    }
-    if(cfg.word2){
-      var b = document.createElement("div");
-      b.className = "quiet";
-      b.textContent = cfg.word2;
-      b.style.marginTop = "0.35em";
-      word.appendChild(b);
-    }
+    buildTicker();
 
     buildShots();
     shotAt = 0;
@@ -428,6 +487,7 @@ quiet3.jpg"></textarea>
     try{
       if(cfg.sndUrl){
         if(snd.getAttribute("src") !== cfg.sndUrl) snd.setAttribute("src", cfg.sndUrl);
+        snd.volume = Math.max(0, Math.min(1, (parseInt(cfg.vol, 10) || 0) / 100));
         snd.currentTime = 0;
         var p = snd.play();
         if(p && p.catch) p.catch(function(){});
@@ -492,6 +552,9 @@ quiet3.jpg"></textarea>
 
   function fillPanel(){
     $("thr").value = cfg.thr;
+    $("thrNum").value = cfg.thr;
+    $("vol").value = cfg.vol;
+    $("volNum").value = cfg.vol;
     $("hold").value = cfg.hold;
     $("dur").value = cfg.dur;
     $("cool").value = cfg.cool;
@@ -504,6 +567,8 @@ quiet3.jpg"></textarea>
   }
   function readPanel(){
     cfg.thr = Math.max(1, Math.min(100, parseInt($("thr").value, 10) || 55));
+    cfg.vol = Math.max(0, Math.min(100, parseInt($("vol").value, 10)));
+    if(isNaN(cfg.vol)) cfg.vol = 80;
     cfg.hold = Math.max(1, Math.min(60, parseInt($("hold").value, 10) || 4));
     cfg.dur = Math.max(3, Math.min(120, parseInt($("dur").value, 10) || 12));
     cfg.cool = Math.max(0, Math.min(600, parseInt($("cool").value, 10) || 0));
@@ -525,7 +590,8 @@ quiet3.jpg"></textarea>
   }
   function paintPanel(){
     var thr = Math.max(1, Math.min(100, parseInt($("thr").value, 10) || 55));
-    $("thrNum").textContent = thr;
+    /* the number beside it is a field you can type in, so it is only ever
+       written on an event — writing it here would fight the caret */
     $("mark").style.left = thr + "%";
     var f = $("fill");
     f.style.width = Math.round(level) + "%";
@@ -571,6 +637,7 @@ quiet3.jpg"></textarea>
     st.textContent = "trying…"; st.className = "pill";
     try{
       snd.setAttribute("src", cfg.sndUrl);
+      snd.volume = Math.max(0, Math.min(1, (parseInt(cfg.vol, 10) || 0) / 100));
       snd.currentTime = 0;
       var p = snd.play();
       if(p && p.then) p.then(function(){ st.textContent = "plays ✓"; st.className = "pill on"; },
@@ -582,9 +649,25 @@ quiet3.jpg"></textarea>
     cfg = JSON.parse(JSON.stringify(DEF));
     save(); fillPanel(); paintBoard();
   });
-  ["thr","hold","dur","cool"].forEach(function(id){
-    $(id).addEventListener("input", function(){});
-  });
+  /* A slider is quick, a number is exact, and a teacher wants both — one to
+     find the setting in a live room, the other to write it down and put the
+     same value on another machine. */
+  function pair(slider, box, lo, hi){
+    function fromSlider(){ $(box).value = $(slider).value; }
+    function fromBox(){
+      var v = parseInt($(box).value, 10);
+      if(isNaN(v)) return;                       // mid-typing: leave it alone
+      $(slider).value = Math.max(lo, Math.min(hi, v));
+    }
+    $(slider).addEventListener("input", fromSlider);
+    $(box).addEventListener("input", fromBox);
+    $(box).addEventListener("change", function(){
+      var v = Math.max(lo, Math.min(hi, parseInt($(box).value, 10) || lo));
+      $(box).value = v; $(slider).value = v;
+    });
+  }
+  pair("thr", "thrNum", 1, 100);
+  pair("vol", "volNum", 0, 100);
   $("imgs").addEventListener("change", paintThumbs);
 
   document.addEventListener("keydown", function(e){
