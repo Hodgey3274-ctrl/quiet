@@ -230,12 +230,14 @@ quiet3.jpg"></textarea>
     <div class="acts">
       <button type="button" class="go" id="save">Save</button>
       <button type="button" id="tryA">Test the alert</button>
+      <button type="button" id="full">Full screen</button>
       <button type="button" id="close">Close</button>
       <button type="button" class="bad" id="reset">Reset all</button>
     </div>
     <p class="hint" id="saveNote"></p>
     <p class="hint">Open this panel again by clicking the very top-left corner of
-       the screen, or pressing <b>S</b>. Neither is anything a class will find.</p>
+       the screen, or pressing <b>S</b>. Neither is anything a class will find.
+       <b>F</b> goes full screen and back.</p>
   </div>
 </div>
 <script>
@@ -288,7 +290,18 @@ quiet3.jpg"></textarea>
 
   /* ---------- listening ---------- */
   var actx = null, analyser = null, buf = null, stream = null;
-  var micState = "not started", micOk = false;
+  var micState = "waiting for a tap on the page", micOk = false;
+
+  var GKEY = "bellboard.quiet.micok";
+  function micGrantedBefore(){
+    try{ return localStorage.getItem(GKEY) === "1"; }catch(e){ return false; }
+  }
+  function goFull(){
+    try{
+      if(document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen();
+    }catch(e){}
+  }
   var level = 0;                 // smoothed, 0-100
   var aboveSince = 0, quietUntil = 0, firing = false;
 
@@ -323,6 +336,7 @@ quiet3.jpg"></textarea>
       src.connect(analyser);            // connected to nothing else: never played back
       micOk = true;
       micState = "on";
+      try{ localStorage.setItem(GKEY, "1"); }catch(e){}
     }).catch(function(err){
       var n = (err && err.name) || String(err);
       micState =
@@ -537,6 +551,7 @@ quiet3.jpg"></textarea>
 
   $("corner").addEventListener("click", openPanel);
   $("close").addEventListener("click", closePanel);
+  $("full").addEventListener("click", function(){ closePanel(); goFull(); });
   panel.addEventListener("click", function(e){ if(e.target === panel) closePanel(); });
 
   $("save").addEventListener("click", function(){
@@ -581,22 +596,44 @@ quiet3.jpg"></textarea>
       return;
     }
     if(e.key === "s" || e.key === "S"){ panelOpen() ? closePanel() : openPanel(); }
+    if(e.key === "f" || e.key === "F"){ goFull(); }
   });
   /* dismissing by hand, for the day it fires while a guest is speaking */
   alertEl.addEventListener("click", function(){ clear(true); });
 
   /* ---------- first click ----------
      A browser will not open a microphone, start audio, or hold a screen awake
-     until someone has touched the page. One tap buys all three. */
-  gate.addEventListener("click", function(){
-    gate.hidden = true;
+     until someone has touched the page. One tap buys all three — and it is
+     taken from any gesture at all, not only the start screen, because the
+     start screen is exactly what a half-configured page might skip. */
+  var started = false, wantPanel = false;
+
+  function armFromGesture(){
+    if(started) return;
+    started = true;
     startMic();
     keepAwake();
-    try{ document.documentElement.requestFullscreen(); }catch(e){}
+  }
+  ["pointerdown","keydown","touchstart"].forEach(function(ev){
+    window.addEventListener(ev, armFromGesture, true);
+  });
+
+  gate.addEventListener("click", function(){
+    armFromGesture();
+    gate.hidden = true;
+    /* Full screen only once the microphone has been granted before. On a first
+       run the permission prompt and a fullscreen transition fight each other,
+       and it is the prompt that loses — so the first tap just asks, and going
+       full screen waits until there is nothing left to ask. */
+    if(micGrantedBefore()) goFull();
+    if(wantPanel){ wantPanel = false; openPanel(); }
   });
 
   paintBoard();
-  if(!cfg.boardUrl){ gate.hidden = true; openPanel(); }
+  /* Nothing set up yet: still show the start screen, and bring the settings up
+     immediately after it. Hiding the start screen skipped the microphone
+     entirely, which is a poor way to begin. */
+  if(!cfg.boardUrl) wantPanel = true;
   requestAnimationFrame(tick);
 })();
 </script>
