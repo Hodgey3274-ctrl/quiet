@@ -212,6 +212,22 @@
     </div>
 
     <div class="f">
+      <label>When to listen</label>
+      <div class="row">
+        <input type="checkbox" id="classOnly" style="width:auto;margin:0">
+        <span class="hint" style="margin:0">only while a class is running</span>
+      </div>
+      <div id="linkState" class="state" style="margin-top:9px"></div>
+      <p class="hint">Bell Board tells this page what kind of moment it is, so a
+         passing period — or Bell Board's own transition music, which this
+         microphone can hear perfectly well — cannot set the alert off.</p>
+      <p class="hint">If it ever stops saying, this goes back to listening all
+         day rather than listening never. An old copy of the board that was never
+         taught to speak will read as silent, and everything works as it did
+         before.</p>
+    </div>
+
+    <div class="f">
       <label>Then stay quiet for</label>
       <div class="row">
         <input type="number" id="cool" min="0" max="600" step="10" style="max-width:110px">
@@ -307,6 +323,7 @@ quiet3.jpg"></textarea>
     hold: 4,          // seconds above the line before it fires
     dur: 12,          // seconds the alert stays up
     cool: 120,        // seconds before it may fire again
+    classOnly: true,  // ignore the room unless Bell Board says a class is running
     word1: "Too loud",
     word2: "Back to work, please",
     sndUrl: "quiet.mp3",
@@ -356,6 +373,52 @@ quiet3.jpg"></textarea>
   }
   var level = 0;                 // smoothed, 0-100
   var aboveSince = 0, quietUntil = 0, firing = false;
+
+  /* ---------- what Bell Board says about the moment ----------
+     The board in the frame below announces, twice a second, whether a class is
+     running and whether it is playing music. Both matter here. Passing periods
+     are the loudest minutes of the day and none of that noise is a class's
+     fault; and the transition music the board plays between bells leaves the
+     same speakers this microphone is pointed at, so left alone this page would
+     fire an alert at Bell Board's own song and then play a second song over it.
+
+     Nothing arriving here is trusted with anything. The only question it can
+     answer is whether to bother listening — it cannot change a setting, reach
+     the microphone, or put anything on screen. And if it falls silent we go
+     back to listening all day: a board that has crashed, or an older copy that
+     was never taught to speak, must leave the room monitored rather than
+     unmonitored. Failing the safe way round means failing noisy. */
+  var boardSays = null, boardHeard = 0;
+  var SIGNAL_GRACE = 20000;      // ms of silence before we stop believing it
+
+  window.addEventListener("message", function(e){
+    var d = e.data;
+    if(!d || typeof d !== "object" || d.bb !== "bellboard.state") return;
+    if(e.source === window) return;
+    boardSays = { inClass: d.inClass === true, music: d.music === true };
+    boardHeard = Date.now();
+  });
+
+  function boardLive(){
+    return !!boardSays && (Date.now() - boardHeard) <= SIGNAL_GRACE;
+  }
+
+  /* Whether what the microphone hears should be allowed to raise an alert. The
+     bar in the settings panel keeps moving either way, so a passing period
+     still shows you what the room sounds like while you are setting the line. */
+  function listening(){
+    if(cfg.classOnly === false) return true;
+    if(!boardLive()) return true;
+    if(boardSays.music) return false;
+    return boardSays.inClass;
+  }
+  function pauseWhy(){
+    if(boardLive()){
+      if(boardSays.music) return "paused — Bell Board is playing music";
+      if(!boardSays.inClass) return "paused — no class running";
+    }
+    return "paused";
+  }
 
   function micLine(){
     return micOk
@@ -561,7 +624,8 @@ quiet3.jpg"></textarea>
     level = raw > level ? (level + (raw - level) * 0.35)
                         : (level + (raw - level) * 0.08);
 
-    if(micOk && !firing && Date.now() >= quietUntil){
+    var live = listening();
+    if(micOk && !firing && live && Date.now() >= quietUntil){
       var thr = Math.max(1, Math.min(100, parseInt(cfg.thr, 10) || 55));
       var hold = Math.max(1, Math.min(60, parseInt(cfg.hold, 10) || 4)) * 1000;
       if(level >= thr){
@@ -570,6 +634,10 @@ quiet3.jpg"></textarea>
       }else{
         aboveSince = 0;
       }
+    }else if(!live){
+      /* a count part-finished when the bell rang must not survive the passing
+         period and land on the class walking in */
+      aboveSince = 0;
     }
     if(panelOpen()) paintPanel();
     requestAnimationFrame(tick);
@@ -609,6 +677,7 @@ quiet3.jpg"></textarea>
     $("hold").value = cfg.hold;
     $("dur").value = cfg.dur;
     $("cool").value = cfg.cool;
+    $("classOnly").checked = cfg.classOnly !== false;
     $("word1").value = cfg.word1;
     $("word2").value = cfg.word2;
     $("sndUrl").value = cfg.sndUrl;
@@ -623,6 +692,7 @@ quiet3.jpg"></textarea>
     cfg.hold = Math.max(1, Math.min(60, parseInt($("hold").value, 10) || 4));
     cfg.dur = Math.max(3, Math.min(120, parseInt($("dur").value, 10) || 12));
     cfg.cool = Math.max(0, Math.min(600, parseInt($("cool").value, 10) || 0));
+    cfg.classOnly = $("classOnly").checked;
     cfg.word1 = $("word1").value;
     cfg.word2 = $("word2").value;
     cfg.sndUrl = $("sndUrl").value.trim();
@@ -649,9 +719,26 @@ quiet3.jpg"></textarea>
     f.className = "fill" + (level >= thr ? " hot" : "");
     $("num").textContent = micOk ? Math.round(level) : "—";
 
+    var ls = $("linkState");
+    /* cfg, not the checkbox, on purpose: this line reports what the page is
+       actually doing, and the checkbox does not mean anything until Save. */
+    if(cfg.classOnly === false){
+      ls.textContent = "listening all day — the switch above is off";
+      ls.style.color = "var(--faint)";
+    }else if(!boardLive()){
+      ls.textContent = "Bell Board is not saying — listening all day";
+      ls.style.color = "var(--amber)";
+    }else{
+      ls.textContent = "Bell Board says: " + (boardSays.music ? "playing music"
+                                            : boardSays.inClass ? "class running"
+                                            : "between classes");
+      ls.style.color = (boardSays.inClass && !boardSays.music) ? "var(--green)" : "var(--faint)";
+    }
+
     var extra = "";
     if(micOk){
       if(firing) extra = "\nalert on screen now";
+      else if(!listening()) extra = "\n" + pauseWhy();
       else if(Date.now() < quietUntil){
         extra = "\nresting for " + Math.ceil((quietUntil - Date.now()) / 1000) + "s before it can fire again";
       }else if(aboveSince){
