@@ -28,6 +28,13 @@
     position:fixed; left:0; top:0; width:46px; height:46px; z-index:5;
     background:transparent; border:0; cursor:default;
   }
+  /* The one mark this page ever puts on a classroom screen, and only while it
+     has been stopped by hand. Small enough that nobody asks about it, present
+     enough that a week does not go by with the room unwatched. */
+  #corner.off::after{
+    content:""; position:absolute; left:7px; top:7px; width:6px; height:6px;
+    border-radius:50%; background:var(--amber); opacity:.55;
+  }
 
   /* ---------- the alert ---------- */
   #alert{
@@ -228,6 +235,37 @@
     </div>
 
     <div class="f">
+      <label>Leave the ends of a lesson alone</label>
+      <div class="row">
+        <input type="number" id="warmUp" min="0" max="60" step="1" style="max-width:80px">
+        <span class="hint" style="margin:0">minutes at the start</span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="number" id="coolDown" min="0" max="60" step="1" style="max-width:80px">
+        <span class="hint" style="margin:0">minutes before the bell</span>
+      </div>
+      <p class="hint">You are the loudest thing in the room while you are teaching
+         the front of it, and again while thirty people pack up. Neither is the
+         class being loud. Set both to 0 to listen from bell to bell.</p>
+    </div>
+
+    <div class="f">
+      <label>Stop it for now</label>
+      <div id="stopState" class="state" style="margin-bottom:9px"></div>
+      <div class="acts">
+        <button id="stopClass" type="button">Stop until the bell</button>
+        <button id="stopOpen" type="button">Stop until I say</button>
+        <button id="startAgain" type="button" class="go" hidden>Start listening again</button>
+      </div>
+      <p class="hint">For the lesson that does not fit the pattern — a talk, a
+         guest, a presentation that runs long. <b>Stop until the bell</b> starts
+         itself again at the end of this period, so it cannot be forgotten.</p>
+      <p class="hint">While it is stopped, a small amber dot sits in the very top
+         corner of the screen. Nothing a class will read anything into, and enough
+         that you will not lose a week to a switch you meant to flick back.</p>
+    </div>
+
+    <div class="f">
       <label>Then stay quiet for</label>
       <div class="row">
         <input type="number" id="cool" min="0" max="600" step="10" style="max-width:110px">
@@ -324,6 +362,9 @@ quiet3.jpg"></textarea>
     dur: 12,          // seconds the alert stays up
     cool: 120,        // seconds before it may fire again
     classOnly: true,  // ignore the room unless Bell Board says a class is running
+    warmUp: 10,       // minutes at the start of a lesson to leave alone
+    coolDown: 5,      // minutes at the end of a lesson to leave alone
+    pause: 0,         // 0 running, -1 stopped by hand, or a time to start again at
     word1: "Too loud",
     word2: "Back to work, please",
     sndUrl: "quiet.mp3",
@@ -395,9 +436,40 @@ quiet3.jpg"></textarea>
     var d = e.data;
     if(!d || typeof d !== "object" || d.bb !== "bellboard.state") return;
     if(e.source === window) return;
-    boardSays = { inClass: d.inClass === true, music: d.music === true };
+    boardSays = {
+      inClass: d.inClass === true,
+      music: d.music === true,
+      /* seconds into the period and seconds left in it. An older board sends
+         neither; null means "it did not say", which is different from zero and
+         is treated as "do not apply the window at all". */
+      into: typeof d.into === "number" ? d.into : null,
+      left: typeof d.left === "number" ? d.left : null
+    };
     boardHeard = Date.now();
   });
+
+  /* ---------- stopped by hand ----------
+     0 means running. A time in the future means stopped until then, which is
+     how "for the rest of this lesson" is stored: the bell is a moment, so it
+     may as well be kept as one. -1 means stopped until she says otherwise. */
+  function stoppedBy(){
+    var p = cfg.pause;
+    if(p === -1) return "by hand";
+    if(typeof p === "number" && p > Date.now()) return "until the bell";
+    return "";
+  }
+  function stop(kind){
+    if(kind === "class"){
+      var secs = boardLive() && typeof boardSays.left === "number" && boardSays.left > 0
+                 ? boardSays.left : 45 * 60;   /* no bell to aim at: an hour-ish */
+      cfg.pause = Date.now() + secs * 1000;
+    }else{
+      cfg.pause = -1;
+    }
+    save(); paintStop();
+  }
+  function unstop(){ cfg.pause = 0; save(); paintStop(); }
+  var lastStop = "";
 
   function boardLive(){
     return !!boardSays && (Date.now() - boardHeard) <= SIGNAL_GRACE;
@@ -406,16 +478,39 @@ quiet3.jpg"></textarea>
   /* Whether what the microphone hears should be allowed to raise an alert. The
      bar in the settings panel keeps moving either way, so a passing period
      still shows you what the room sounds like while you are setting the line. */
+  /* The two ends of a lesson, in seconds. You are the loudest thing in the room
+     while you are teaching the front of it, and again while thirty people pack
+     up — neither is the class being loud, and an alert in either place is one
+     you would have to talk over. */
+  function winSecs(){
+    return {
+      w: Math.max(0, Math.min(60, parseInt(cfg.warmUp, 10) || 0)) * 60,
+      c: Math.max(0, Math.min(60, parseInt(cfg.coolDown, 10) || 0)) * 60
+    };
+  }
   function listening(){
+    if(stoppedBy()) return false;
     if(cfg.classOnly === false) return true;
     if(!boardLive()) return true;
     if(boardSays.music) return false;
-    return boardSays.inClass;
+    if(!boardSays.inClass) return false;
+    var s = winSecs();
+    if(boardSays.into !== null && boardSays.into < s.w) return false;
+    if(boardSays.left !== null && boardSays.left < s.c) return false;
+    return true;
   }
   function pauseWhy(){
+    var by = stoppedBy();
+    if(by === "by hand") return "stopped — until you start it again";
+    if(by === "until the bell") return "stopped — until the end of this lesson";
     if(boardLive()){
       if(boardSays.music) return "paused — Bell Board is playing music";
       if(!boardSays.inClass) return "paused — no class running";
+      var s = winSecs();
+      if(boardSays.into !== null && boardSays.into < s.w)
+        return "paused — the first " + (s.w / 60) + " minutes of the lesson";
+      if(boardSays.left !== null && boardSays.left < s.c)
+        return "paused — the last " + (s.c / 60) + " minutes of the lesson";
     }
     return "paused";
   }
@@ -624,6 +719,11 @@ quiet3.jpg"></textarea>
     level = raw > level ? (level + (raw - level) * 0.35)
                         : (level + (raw - level) * 0.08);
 
+    /* the corner dot has to be right even with the panel shut, and a timed stop
+       ends on its own — so watch for the change rather than repaint every frame */
+    var by = stoppedBy();
+    if(by !== lastStop){ lastStop = by; paintStop(); }
+
     var live = listening();
     if(micOk && !firing && live && Date.now() >= quietUntil){
       var thr = Math.max(1, Math.min(100, parseInt(cfg.thr, 10) || 55));
@@ -678,6 +778,9 @@ quiet3.jpg"></textarea>
     $("dur").value = cfg.dur;
     $("cool").value = cfg.cool;
     $("classOnly").checked = cfg.classOnly !== false;
+    $("warmUp").value = cfg.warmUp;
+    $("coolDown").value = cfg.coolDown;
+    paintStop();
     $("word1").value = cfg.word1;
     $("word2").value = cfg.word2;
     $("sndUrl").value = cfg.sndUrl;
@@ -693,6 +796,8 @@ quiet3.jpg"></textarea>
     cfg.dur = Math.max(3, Math.min(120, parseInt($("dur").value, 10) || 12));
     cfg.cool = Math.max(0, Math.min(600, parseInt($("cool").value, 10) || 0));
     cfg.classOnly = $("classOnly").checked;
+    cfg.warmUp = Math.max(0, Math.min(60, parseInt($("warmUp").value, 10) || 0));
+    cfg.coolDown = Math.max(0, Math.min(60, parseInt($("coolDown").value, 10) || 0));
     cfg.word1 = $("word1").value;
     cfg.word2 = $("word2").value;
     cfg.sndUrl = $("sndUrl").value.trim();
@@ -709,6 +814,29 @@ quiet3.jpg"></textarea>
       t.appendChild(im);
     });
   }
+  /* Two places say whether it has been stopped: the panel, which explains, and
+     the corner dot, which is the only thing visible with the panel shut. */
+  function paintStop(){
+    var by = stoppedBy(), s = $("stopState");
+    $("corner").className = by ? "off" : "";
+    if(s){
+      if(by === "by hand"){
+        s.textContent = "stopped — it will not listen until you start it again";
+        s.style.color = "var(--amber)";
+      }else if(by === "until the bell"){
+        var mins = Math.max(1, Math.ceil((cfg.pause - Date.now()) / 60000));
+        s.textContent = "stopped — starts itself again in about " + mins + " min";
+        s.style.color = "var(--amber)";
+      }else{
+        s.textContent = "running";
+        s.style.color = "var(--green)";
+      }
+      $("stopClass").hidden = !!by;
+      $("stopOpen").hidden = !!by;
+      $("startAgain").hidden = !by;
+    }
+  }
+
   function paintPanel(){
     var thr = Math.max(1, Math.min(100, parseInt($("thr").value, 10) || 55));
     /* the number beside it is a field you can type in, so it is only ever
@@ -718,6 +846,8 @@ quiet3.jpg"></textarea>
     f.style.width = Math.round(level) + "%";
     f.className = "fill" + (level >= thr ? " hot" : "");
     $("num").textContent = micOk ? Math.round(level) : "—";
+
+    paintStop();      /* the countdown on a timed stop ticks down while you watch */
 
     var ls = $("linkState");
     /* cfg, not the checkbox, on purpose: this line reports what the page is
@@ -752,6 +882,10 @@ quiet3.jpg"></textarea>
 
   function openPanel(){ panel.hidden = false; fillPanel(); }
   function closePanel(){ panel.hidden = true; }
+
+  $("stopClass").addEventListener("click", function(){ stop("class"); });
+  $("stopOpen").addEventListener("click", function(){ stop("open"); });
+  $("startAgain").addEventListener("click", unstop);
 
   $("corner").addEventListener("click", openPanel);
   $("close").addEventListener("click", closePanel);
@@ -855,6 +989,10 @@ quiet3.jpg"></textarea>
      immediately after it. Hiding the start screen skipped the microphone
      entirely, which is a poor way to begin. */
   if(!cfg.boardUrl) wantPanel = true;
+  /* a stop left over from before a reload is still a stop, and the corner has
+     to show it from the first frame */
+  lastStop = stoppedBy();
+  paintStop();
   requestAnimationFrame(tick);
 })();
 </script>
