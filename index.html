@@ -175,6 +175,15 @@
 
     <div class="f">
       <label>Microphone</label>
+      <select id="micPick" style="width:100%;background:var(--raised);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:9px 11px;font-size:14px"></select>
+      <p class="hint">A classroom panel usually offers several — its own built-in
+         array, a webcam, anything plugged into the front. They hear the room very
+         differently, so it is worth picking deliberately. Choose one and press
+         <b>Save</b>; it changes over straight away and the bar below follows the
+         new one.</p>
+      <p class="hint">Not sure which is which? Pick one, save, then talk from where
+         you normally stand and watch the bar. The one that moves most for the back
+         of the room is the one you want.</p>
       <div id="micState" class="state"></div>
       <div class="meter" id="meter">
         <div class="fill" id="fill"></div>
@@ -365,6 +374,7 @@ quiet3.jpg"></textarea>
     warmUp: 10,       // minutes at the start of a lesson to leave alone
     coolDown: 5,      // minutes at the end of a lesson to leave alone
     pause: 0,         // 0 running, -1 stopped by hand, or a time to start again at
+    micId: "",        // which microphone; empty means whatever the machine defaults to
     word1: "Too loud",
     word2: "Back to work, please",
     sndUrl: "quiet.mp3",
@@ -400,7 +410,7 @@ quiet3.jpg"></textarea>
 
   /* ---------- listening ---------- */
   var actx = null, analyser = null, buf = null, stream = null;
-  var micState = "waiting for a tap on the page", micOk = false;
+  var micState = "waiting for a tap on the page", micOk = false, micFellBack = false;
 
   var GKEY = "bellboard.quiet.micok";
   function micGrantedBefore(){
@@ -516,26 +526,37 @@ quiet3.jpg"></textarea>
   }
 
   function micLine(){
-    return micOk
-      ? "listening · nothing recorded"
-      : ("not listening — " + micState);
+    if(!micOk) return "not listening — " + micState;
+    return micFellBack
+      ? "listening · nothing recorded\nthe microphone you picked was not there, so this is the usual one"
+      : "listening · nothing recorded";
   }
 
-  function startMic(){
+  /* A classroom panel often presents several microphones — the panel's own
+     array, a webcam, whatever is plugged into the front. They hear the room
+     very differently, so which one this uses is worth being able to say. Empty
+     means whatever the machine would pick for itself. */
+  function micWanted(want){
+    var a = {
+      /* the browser's own cleanup would fight the measurement: it exists to
+         make one voice clearer, and we are measuring the whole room */
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    };
+    if(want) a.deviceId = { exact: want };
+    return { audio: a };
+  }
+
+  function startMic(want, retry){
     if(micOk || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
       if(!navigator.mediaDevices) micState = "this browser offers no microphone access";
       return;
     }
+    if(want === undefined) want = cfg.micId || "";
     micState = "asking for the microphone…";
-    navigator.mediaDevices.getUserMedia({
-      audio: {
-        /* the browser's own cleanup would fight the measurement: it exists to
-           make one voice clearer, and we are measuring the whole room */
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
-      }
-    }).then(function(s){
+    navigator.mediaDevices.getUserMedia(micWanted(want)).then(function(s){
+      micFellBack = retry === true;
       stream = s;
       actx = new (window.AudioContext || window.webkitAudioContext)();
       var src = actx.createMediaStreamSource(s);
@@ -547,14 +568,69 @@ quiet3.jpg"></textarea>
       micOk = true;
       micState = "on";
       try{ localStorage.setItem(GKEY, "1"); }catch(e){}
+      listMics();       /* the names only become readable once it has been allowed */
     }).catch(function(err){
       var n = (err && err.name) || String(err);
+      /* the microphone she picked is not there any more — unplugged, or the
+         panel woke up differently. Take the default rather than go deaf, and
+         say so, because a silent fallback is how a room ends up unwatched. */
+      if(want && !retry && (n === "OverconstrainedError" || n === "NotFoundError")){
+        startMic("", true);
+        return;
+      }
       micState =
         n === "NotAllowedError" ? "permission refused — click the camera icon in the address bar to allow it" :
         n === "NotFoundError"   ? "no microphone found on this computer" :
         n === "NotReadableError"? "the microphone is busy in another program" :
         ("blocked (" + n + ")");
     });
+  }
+
+  /* Changing microphone means opening a new stream, so the old one has to be
+     let go first — a track left running keeps the recording light on. */
+  function stopMic(){
+    try{ if(stream && stream.getTracks) stream.getTracks().forEach(function(t){ t.stop(); }); }catch(e){}
+    try{ if(actx && actx.close) actx.close(); }catch(e){}
+    stream = null; actx = null; analyser = null; buf = null;
+    micOk = false; level = 0; aboveSince = 0;
+  }
+  function swapMic(){
+    stopMic();
+    micState = "changing microphone…";
+    startMic();
+  }
+
+  /* The list for the settings panel. Labels are blank until the microphone has
+     been allowed once, which is why this is called again after it opens. */
+  function listMics(){
+    var sel = document.getElementById("micPick");
+    if(!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    navigator.mediaDevices.enumerateDevices().then(function(ds){
+      var ins = ds.filter(function(d){ return d.kind === "audioinput"; });
+      sel.innerHTML = "";
+      var first = document.createElement("option");
+      first.value = "";
+      first.textContent = "Whatever this computer normally uses";
+      sel.appendChild(first);
+      ins.forEach(function(d, i){
+        var o = document.createElement("option");
+        o.value = d.deviceId;
+        o.textContent = d.label || ("Microphone " + (i + 1) + " — allow the mic to see its name");
+        sel.appendChild(o);
+      });
+      /* one she chose that is not plugged in today must still show as chosen,
+         rather than quietly reading back as the default */
+      if(cfg.micId && !ins.some(function(d){ return d.deviceId === cfg.micId; })){
+        var gone = document.createElement("option");
+        gone.value = cfg.micId;
+        gone.textContent = "the one you picked — not found today";
+        sel.appendChild(gone);
+      }
+      sel.value = cfg.micId || "";
+    }, function(){});
+  }
+  if(navigator.mediaDevices && "ondevicechange" in navigator.mediaDevices){
+    navigator.mediaDevices.addEventListener("devicechange", listMics);
   }
 
   /* RMS over the raw waveform, turned into decibels and then into a 0-100 the
@@ -781,6 +857,7 @@ quiet3.jpg"></textarea>
     $("warmUp").value = cfg.warmUp;
     $("coolDown").value = cfg.coolDown;
     paintStop();
+    listMics();
     $("word1").value = cfg.word1;
     $("word2").value = cfg.word2;
     $("sndUrl").value = cfg.sndUrl;
@@ -796,6 +873,7 @@ quiet3.jpg"></textarea>
     cfg.dur = Math.max(3, Math.min(120, parseInt($("dur").value, 10) || 12));
     cfg.cool = Math.max(0, Math.min(600, parseInt($("cool").value, 10) || 0));
     cfg.classOnly = $("classOnly").checked;
+    cfg.micId = $("micPick") ? $("micPick").value : (cfg.micId || "");
     cfg.warmUp = Math.max(0, Math.min(60, parseInt($("warmUp").value, 10) || 0));
     cfg.coolDown = Math.max(0, Math.min(60, parseInt($("coolDown").value, 10) || 0));
     cfg.word1 = $("word1").value;
@@ -893,8 +971,12 @@ quiet3.jpg"></textarea>
   panel.addEventListener("click", function(e){ if(e.target === panel) closePanel(); });
 
   $("save").addEventListener("click", function(){
+    var wasMic = cfg.micId || "";
     readPanel();
     var ok = save();
+    /* only reopen the stream if the microphone actually changed: every other
+       setting is read live, and restarting costs a second of deafness */
+    if((cfg.micId || "") !== wasMic) swapMic();
     paintBoard(); paintThumbs();
     $("saveNote").textContent = ok ? "Saved on this computer." : "Could not save — this browser is blocking storage.";
     $("saveNote").style.color = ok ? "var(--green)" : "var(--red)";
